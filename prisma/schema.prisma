@@ -1,0 +1,346 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Roles ────────────────────────────────────────────────────────────────────
+enum Role {
+  CITIZEN
+  AUTHORITY
+  ADMIN
+}
+
+enum ReportStatus {
+  REPORTED
+  AUTHORITY_IDENTIFIED
+  SUBMITTED
+  ACKNOWLEDGED
+  UNDER_REVIEW
+  ACTION_TAKEN
+  RESOLVED
+  REJECTED
+}
+
+enum Category {
+  WATER
+  ROADS
+  ELECTRICITY
+  GARBAGE
+  DRAINAGE
+  EDUCATION
+  HEALTHCARE
+  TRANSPORT
+  ENVIRONMENT
+  PUBLIC_SERVICES
+  EMPLOYMENT
+  INFRASTRUCTURE
+  DOCUMENTATION
+  SAFETY
+  RIGHTS
+  OTHER
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum EvidenceKind {
+  PHOTO
+  VIDEO
+  DOCUMENT
+  VOICE
+}
+
+enum IssueStatus {
+  UNVERIFIED
+  REPORTED
+  UNDER_REVIEW
+  ACTION_PENDING
+  DISPUTED
+  RESOLVED
+}
+
+enum NotificationType {
+  STATUS_CHANGE
+  RESPONSE_RECEIVED
+  ISSUE_UPDATE
+  SYSTEM
+}
+
+enum LocationType {
+  COUNTRY
+  STATE
+  DIVISION
+  DISTRICT
+  SUB_DISTRICT
+  BLOCK
+  VILLAGE
+  CITY
+  TOWN
+  MUNICIPAL_BODY
+  WARD
+}
+
+// ─── Users ────────────────────────────────────────────────────────────────────
+model User {
+  id                   String   @id @default(cuid())
+  name                 String
+  email                String   @unique
+  passwordHash         String
+  role                 Role     @default(CITIZEN)
+  language             String   @default("en")
+  phone                String?
+  state                String?
+  district             String?
+  // Authority jurisdiction (only meaningful for AUTHORITY role)
+  jurisdictionState    String?
+  jurisdictionDistrict String?
+  department           String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  reports         Report[]           @relation("ReportAuthor")
+  assignedReports Report[]           @relation("ReportAuthority")
+  responses       OfficialResponse[]
+  notifications   Notification[]
+  conversations   Conversation[]
+  savedIssues     SavedIssue[]
+  auditLogs       AuditLog[]
+  statusChanges   StatusHistory[]    @relation("StatusActor")
+}
+
+model Report {
+  id             String        @id @default(cuid())
+  publicId       String        @unique // JA-00001
+  userId         String
+  user           User          @relation("ReportAuthor", fields: [userId], references: [id], onDelete: Cascade)
+  category       Category
+  title          String
+  description    String        @db.Text
+  state          String
+  district       String
+  city           String
+  area           String?
+  subDistrict    String?
+  block          String?
+  ward           String?
+  settlementType LocationType?
+  locationId     String?
+  location       Location?     @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  landmark       String?
+  latitude       Float?
+  longitude      Float?
+  status         ReportStatus  @default(REPORTED)
+  priority       Priority      @default(MEDIUM)
+  isPublic       Boolean       @default(true)
+  authorityId    String?
+  authority      User?         @relation("ReportAuthority", fields: [authorityId], references: [id], onDelete: SetNull)
+  issueId        String?
+  issue          PublicIssue?  @relation(fields: [issueId], references: [id], onDelete: SetNull)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  evidence      Evidence[]
+  statusHistory StatusHistory[]
+  responses     OfficialResponse[]
+
+  @@index([status])
+  @@index([category])
+  @@index([state, district])
+  @@index([city])
+  @@index([locationId])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// Official geographic master data is imported from a cited source; citizen
+// entered localities remain on reports and are not promoted to master records.
+model Location {
+  id              String       @id @default(cuid())
+  type            LocationType
+  name            String
+  source          String
+  sourceCode      String?
+  aliases         String[]     @default([])
+  parentId        String?
+  parent          Location?    @relation("LocationTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children        Location[]   @relation("LocationTree")
+  blockId         String?
+  block           Location?    @relation("VillageBlock", fields: [blockId], references: [id], onDelete: SetNull)
+  villagesInBlock Location[]   @relation("VillageBlock")
+  isActive        Boolean      @default(true)
+  lastVerifiedAt  DateTime?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  reports         Report[]
+
+  @@unique([source, type, sourceCode])
+  @@index([parentId, type, isActive, name])
+  @@index([type, isActive, name])
+  @@index([blockId])
+}
+
+model StatusHistory {
+  id         String        @id @default(cuid())
+  reportId   String
+  report     Report        @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  fromStatus ReportStatus?
+  toStatus   ReportStatus
+  note       String?       @db.Text
+  actorId    String?
+  actor      User?         @relation("StatusActor", fields: [actorId], references: [id], onDelete: SetNull)
+  createdAt  DateTime      @default(now())
+
+  @@index([reportId])
+}
+
+model Evidence {
+  id         String       @id @default(cuid())
+  reportId   String
+  report     Report       @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  fileName   String
+  mimeType   String
+  size       Int
+  storageKey String // relative path inside UPLOAD_DIR
+  kind       EvidenceKind
+  piiFlags   String[]     @default([])
+  caption    String?
+  createdAt  DateTime     @default(now())
+
+  @@index([reportId])
+}
+
+model OfficialResponse {
+  id          String   @id @default(cuid())
+  reportId    String
+  report      Report   @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  authorityId String
+  authority   User     @relation(fields: [authorityId], references: [id], onDelete: Cascade)
+  content     String   @db.Text
+  createdAt   DateTime @default(now())
+
+  @@index([reportId])
+}
+
+// ─── Public issues (aggregated, moderated) ────────────────────────────────────
+model PublicIssue {
+  id               String      @id @default(cuid())
+  slug             String      @unique
+  title            String
+  category         Category
+  state            String
+  district         String
+  city             String?
+  description      String      @db.Text
+  background       String      @db.Text
+  concerns         String      @db.Text
+  officialResponse String?     @db.Text
+  status           IssueStatus @default(REPORTED)
+  reportCount      Int         @default(0)
+  evidenceCount    Int         @default(0)
+  sources          Json        @default("[]")
+  publishedAt      DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  reports Report[]
+  savedBy SavedIssue[]
+
+  @@index([status])
+  @@index([category])
+  @@index([state])
+}
+
+// ─── Know Your Rights ─────────────────────────────────────────────────────────
+model RightArticle {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  category  Category
+  title     Json // { en, hi }
+  summary   Json // { en, hi }
+  actions   Json // [{ en, hi }] — what you can do
+  process   Json // [{ en, hi }] — how to complain / follow up
+  sources   Json     @default("[]")
+  updatedAt DateTime @updatedAt
+
+  @@index([category])
+}
+
+// ─── JanAwaaz AI conversations ────────────────────────────────────────────────
+model Conversation {
+  id         String   @id @default(cuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  sessionKey String // anonymous browser session
+  language   String   @default("en")
+  title      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  messages ChatMessage[]
+
+  @@index([userId])
+  @@index([sessionKey])
+}
+
+model ChatMessage {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           String // "user" | "assistant"
+  content        String       @db.Text
+  metadata       Json         @default("{}")
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId])
+}
+
+// ─── Notifications / saved / audit ────────────────────────────────────────────
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  title     String
+  body      String           @db.Text
+  link      String?
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  @@index([userId, read])
+}
+
+model SavedIssue {
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  issueId   String
+  issue     PublicIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  createdAt DateTime    @default(now())
+
+  @@id([userId, issueId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String?
+  entityId   String?
+  meta       Json     @default("{}")
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+}
+
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}

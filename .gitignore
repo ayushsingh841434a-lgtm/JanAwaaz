@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+next-env.d.ts
+
+# Prisma
+*.db
+*.db-journal
+
+# Uploads (local evidence storage — never commit)
+uploads/
+
+# Environment — real secrets stay out of the repo/export
+.env
+.env.local
+.env*.local
+
+# Logs / OS
+*.log
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# TypeScript build cache
+*.tsbuildinfo
+tsconfig.tsbuildinfo
